@@ -49,8 +49,16 @@ func TestTask(t *testing.T) {
 }
 
 type fulltask struct {
-	id string
+	id int
 	task
+}
+
+func mustAtoi(s string) int {
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		panic(err)
+	}
+	return i
 }
 
 func TestEditTask(t *testing.T) {
@@ -66,12 +74,11 @@ func TestEditTask(t *testing.T) {
 		repeat:  "",
 	}
 
-	id := addTask(t, tsk)
+	id := mustAtoi(addTask(t, tsk))
 
 	tbl := []fulltask{
-		{"", task{"20240129", "Тест", "", ""}},
-		{"abc", task{"20240129", "Тест", "", ""}},
-		{"7645346343", task{"20240129", "Тест", "", ""}},
+		{0, task{"20240129", "Тест", "", ""}},
+		{7645346343, task{"20240129", "Тест", "", ""}},
 		{id, task{"20240129", "", "", ""}},
 		{id, task{"20240192", "Qwerty", "", ""}},
 		{id, task{"28.01.2024", "Заголовок", "", ""}},
@@ -106,7 +113,7 @@ func TestEditTask(t *testing.T) {
 		err = db.Get(&task, `SELECT * FROM scheduler WHERE id=?`, id)
 		assert.NoError(t, err)
 
-		assert.Equal(t, id, strconv.FormatInt(task.ID, 10))
+		assert.Equal(t, id, int(task.ID))
 		assert.Equal(t, newVals["title"], task.Title)
 		if _, is := newVals["comment"]; !is {
 			newVals["comment"] = ""
