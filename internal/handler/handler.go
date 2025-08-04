@@ -3,166 +3,124 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 	"todo_list/internal/models"
 	"todo_list/internal/usecase"
-
-	"github.com/go-playground/validator/v10"
+	"todo_list/tests"
 )
 
-var validate = validator.New()
-
 type Handle struct {
-	uc *usecase.ListUC
+	uc *usecase.TaskUC
 }
 
-func New(usecase *usecase.ListUC) *Handle {
+func New(usecase *usecase.TaskUC) *Handle {
 	return &Handle{
 		uc: usecase,
 	}
 }
 
-func parseRepeat(repeat string) (string, int, error) {
-	if repeat == "" {
-		return "", 0, nil
+func (h *Handle) checkDate(task *models.Task) error {
+	now := time.Now()
+	today := now.Format(tests.DateParsingFormat)
+
+	enteredToday := task.Date == "today" || task.Date == "" || task.Date == today
+
+	if enteredToday {
+		task.Date = today
+		return nil
 	}
 
-	parts := strings.Split(repeat, " ")
-	if len(parts) == 0 {
-		return "", 0, errors.New("empty repeat rule")
+	t, err := time.Parse(tests.DateParsingFormat, task.Date)
+	if err != nil {
+		return errors.New("invalid date format (YYYYMMDD required)")
 	}
 
-	rule := parts[0]
-	switch rule {
-	case "y":
-		if len(parts) != 1 {
-			return "", 0, errors.New("invalid format y rule")
+	if task.Repeat == "" {
+		if t.Before(now) {
+			task.Date = today
 		}
-		return "y", 0, nil
-	case "d":
-		if len(parts) != 2 {
-			return "", 0, errors.New("invalid format d rule")
-		}
-		n, err := strconv.Atoi(parts[1])
-		if err != nil || n <= 0 || n > 400 {
-			return "", 0, errors.New("invalid format d rule")
-		}
-		return "d", n, nil
-	default:
-		return "", 0, errors.New("unsupported repeat rule")
+		return nil
 	}
 
+	if !enteredToday && t.Before(now) {
+		next, err := h.uc.NextDate(*task, now)
+		if err != nil {
+			return err
+		}
+		task.Date = next
+	}
+
+	return nil
 }
 
 func writeError(w http.ResponseWriter, status int, msg string, err error) {
 	slog.Error(msg, slog.Any("error", err))
-	w.WriteHeader(status)
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": msg,
-	})
+	writeJSONResponse(w, map[string]string{"error": msg}, status)
 }
+
+func writeJSONResponse(w http.ResponseWriter, data interface{}, statusCode int) {
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(data)
+}
+
 func (h *Handle) AddTaskHandler(w http.ResponseWriter, req *http.Request) {
+	var task models.Task
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "read request body", err)
+		writeError(w, http.StatusBadRequest, "failed read request body", err)
 		return
 	}
 	defer req.Body.Close()
 
-	var taskRequest models.List
-
-	if err := json.Unmarshal(body, &taskRequest); err != nil {
-		writeError(w, http.StatusBadRequest, "unmarshal json", err)
+	if err := json.Unmarshal(body, &task); err != nil {
+		writeError(w, http.StatusBadRequest, "ivalid JSON", err)
 		return
 	}
 
-	if taskRequest.Date == "" || taskRequest.Date == "today" {
-		taskRequest.Date = time.Now().Format("20060102")
-	}
-
-	if err := validate.Struct(taskRequest); err != nil {
-		writeError(w, http.StatusBadRequest, "validation failed", err)
+	if task.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required", nil)
 		return
 	}
 
-	date, err := time.Parse("20060102", taskRequest.Date)
+	if err := h.checkDate(&task); err != nil {
+		writeError(w, http.StatusBadRequest, "check date", err)
+		return
+	}
+
+	id, err := h.uc.Add(task)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid date format (YYYYMMDD required)", err)
+		writeError(w, http.StatusInternalServerError, "add task failed", err)
 		return
 	}
 
-	if taskRequest.Repeat == "" {
-		now := time.Now().Truncate(24 * time.Hour)
-		if date.Before(now) {
-			writeError(w, http.StatusBadRequest, "date cannot be in the past for non-repeating tasks", nil)
-			return
-		}
-	}
-
-	rpt, interval, err := parseRepeat(taskRequest.Repeat)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid repeat rule", err)
-		return
-	}
-
-	task := models.ListDB{
-		Date:       date,
-		Title:      taskRequest.Title,
-		Comment:    taskRequest.Comment,
-		Repeat:     taskRequest.Repeat,
-		RepeatRule: rpt,
-		Interval:   interval,
-	}
-
-	var response models.ListPostResponse
-	response.ID, err = h.uc.Add(task)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add task", err)
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("failed to encode response", slog.Any("error", err))
-		return
-	}
+	writeJSONResponse(w, map[string]int{"id": id}, http.StatusCreated)
 }
 
 func (h *Handle) GetLastTasksHandler(w http.ResponseWriter, req *http.Request) {
-	result, err := h.uc.GetLast(10)
+	result, err := h.uc.GetLast(tests.TaskLimit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get last tasks", err)
+		writeError(w, http.StatusInternalServerError, "get last tasks failed", err)
 		return
 	}
 
-	tasks := make([]map[string]string, len(result))
-	for i, item := range result {
-		tasks[i] = map[string]string{
-			"id":      strconv.Itoa(item.ID),
-			"date":    item.Date,
-			"title":   item.Title,
-			"comment": item.Comment,
-			"repeat":  item.Repeat,
-		}
+	tasks := make([]models.TaskAPI, 0, len(result))
+	for _, t := range result {
+		tasks = append(tasks, models.TaskAPI{
+			ID:      fmt.Sprintf("%d", t.ID),
+			Date:    t.Date,
+			Title:   t.Title,
+			Comment: t.Comment,
+			Repeat:  t.Repeat,
+		})
 	}
 
-	response := map[string]interface{}{
-		"tasks": tasks,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("failed to encode response", slog.Any("error", err))
-		return
-	}
+	writeJSONResponse(w, map[string]any{"tasks": tasks}, http.StatusOK)
 }
 
 func (h *Handle) GetTaskhandler(w http.ResponseWriter, req *http.Request) {
@@ -177,87 +135,74 @@ func (h *Handle) GetTaskhandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	response, err := h.uc.GetByID(idStr)
+	task, err := h.uc.GetByID(idStr)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "task not found", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("failed to encode response", slog.Any("error", err))
-		return
+	response := models.TaskAPI{
+		ID:      fmt.Sprintf("%d", task.ID),
+		Date:    task.Date,
+		Title:   task.Title,
+		Comment: task.Comment,
+		Repeat:  task.Repeat,
 	}
+
+	writeJSONResponse(w, response, http.StatusOK)
 }
 
 func (h *Handle) PutTaskHandler(w http.ResponseWriter, req *http.Request) {
+	var input models.TaskAPI
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "read request body", err)
+		writeError(w, http.StatusBadRequest, "failed read request body", err)
 		return
 	}
 	defer req.Body.Close()
 
-	var taskRequest models.List
-
-	if err := json.Unmarshal(body, &taskRequest); err != nil {
-		writeError(w, http.StatusBadRequest, "unmarshal json", err)
+	if err := json.Unmarshal(body, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "ivalid JSON", err)
 		return
 	}
 
-	if taskRequest.Date == "" || taskRequest.Date == "today" {
-		taskRequest.Date = time.Now().Format("20060102")
-	}
-
-	if err := validate.Struct(taskRequest); err != nil {
-		writeError(w, http.StatusBadRequest, "validation failed", err)
-		return
-	}
-
-	date, err := time.Parse("20060102", taskRequest.Date)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid date format (YYYYMMDD required)", err)
-		return
-	}
-
-	if taskRequest.Repeat == "" {
-		now := time.Now().Truncate(24 * time.Hour)
-		if date.Before(now) {
-			writeError(w, http.StatusBadRequest, "date cannot be in the past for non-repeating tasks", nil)
-			return
-		}
-	}
-
-	rpt, interval, err := parseRepeat(taskRequest.Repeat)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid repeat rule", err)
-		return
-	}
-
-	task := models.ListDB{
-		ID:         taskRequest.ID,
-		Date:       date,
-		Title:      taskRequest.Title,
-		Comment:    taskRequest.Comment,
-		Repeat:     taskRequest.Repeat,
-		RepeatRule: rpt,
-		Interval:   interval,
-	}
-
-	err = h.uc.Update(task)
+	task, err := h.uc.GetByID(input.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "task not found", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(models.ListPutResponse{ID: task.ID}); err != nil {
-		slog.Error("failed to encode response", slog.Any("error", err))
+	intID, err := strconv.Atoi(input.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "converting id", err)
 		return
 	}
+
+	task = models.Task{
+		ID:      intID,
+		Date:    input.Date,
+		Title:   input.Title,
+		Comment: input.Comment,
+		Repeat:  input.Repeat,
+	}
+
+	if task.Title == "" {
+		writeError(w, http.StatusBadRequest, "title is required", nil)
+		return
+	}
+
+	if err := h.checkDate(&task); err != nil {
+		writeError(w, http.StatusBadRequest, "check date", err)
+		return
+	}
+
+	err = h.uc.Update(task)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed", err)
+		return
+	}
+
+	writeJSONResponse(w, map[string]int{"id": task.ID}, http.StatusOK)
 }
 
 func (h *Handle) PutDoneTaskHandler(w http.ResponseWriter, req *http.Request) {
@@ -280,47 +225,20 @@ func (h *Handle) PutDoneTaskHandler(w http.ResponseWriter, req *http.Request) {
 
 	if response.Repeat == "" {
 		if err := h.uc.Delete(idStr); err != nil {
-			writeError(w, http.StatusInternalServerError, "delete faild", err)
+			writeError(w, http.StatusInternalServerError, "delete failed", err)
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{})
+		writeJSONResponse(w, map[string]any{}, http.StatusOK)
 		return
 	}
 
-	date, err := time.Parse("20060102", response.Date)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid date format (YYYYMMDD required)", err)
-		return
-	}
-
-	rpt, interval, err := parseRepeat(response.Repeat)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid repeat rule", err)
-		return
-	}
-
-	task := models.ListDB{
-		ID:         response.ID,
-		Date:       date,
-		Title:      response.Title,
-		Comment:    response.Comment,
-		Repeat:     response.Repeat,
-		RepeatRule: rpt,
-		Interval:   interval,
-	}
-
-	if err := h.uc.Done(task); err != nil {
+	if err := h.uc.Done(response); err != nil {
 		writeError(w, http.StatusInternalServerError, "delete faild", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{})
-
+	writeJSONResponse(w, map[string]any{}, http.StatusOK)
 }
 
 func (h *Handle) DeleteTaskHandler(w http.ResponseWriter, req *http.Request) {
@@ -342,11 +260,50 @@ func (h *Handle) DeleteTaskHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := h.uc.Delete(idStr); err != nil {
-		writeError(w, http.StatusInternalServerError, "delete faild", err)
+		writeError(w, http.StatusInternalServerError, "delete failеd", err)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{})
+	writeJSONResponse(w, map[string]any{}, http.StatusOK)
+}
+
+func (h *Handle) GetNextDatehandler(w http.ResponseWriter, r *http.Request) {
+	dateStr := r.FormValue("date")
+	if dateStr == "" {
+		writeError(w, http.StatusBadRequest, "date is required", nil)
+		return
+	}
+
+	repeatStr := r.FormValue("repeat")
+	if repeatStr == "" {
+		writeError(w, http.StatusBadRequest, "repeat is required", nil)
+		return
+	}
+
+	nowStr := r.FormValue("now")
+
+	var now time.Time
+	if nowStr == "" {
+		now = time.Now()
+	} else {
+		parsed, err := time.Parse(tests.DateParsingFormat, nowStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid date format (YYYYMMDD required)", err)
+			return
+		}
+		now = parsed
+	}
+
+	task := models.Task{
+		Date:   dateStr,
+		Repeat: repeatStr,
+	}
+
+	nextDate, err := h.uc.NextDate(task, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "next date", err)
+		return
+	}
+
+	writeJSONResponse(w, map[string]string{"next_date": nextDate}, http.StatusOK)
 }

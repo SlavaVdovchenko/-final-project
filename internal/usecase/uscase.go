@@ -1,20 +1,23 @@
 package usecase
 
 import (
+	"strconv"
+	"strings"
 	"time"
 	"todo_list/internal/models"
 	"todo_list/internal/repository"
+	"todo_list/tests"
 
 	"github.com/pkg/errors"
 )
 
-type ListUC struct {
-	ListRepo *repository.ListRepo
+type TaskUC struct {
+	TaskRepo *repository.TaskRepo
 }
 
-func New(list *repository.ListRepo) *ListUC {
-	return &ListUC{
-		ListRepo: list,
+func New(list *repository.TaskRepo) *TaskUC {
+	return &TaskUC{
+		TaskRepo: list,
 	}
 }
 
@@ -25,53 +28,74 @@ func afterNow(date, now time.Time) bool {
 	return false
 }
 
-func (l *ListUC) nextDate(in models.ListDB, now time.Time) (time.Time, error) {
-	date := in.Date
+func (l *TaskUC) nextDate(now time.Time, dstart string, repeat string) (string, error) {
+	date, err := time.Parse(tests.DateParsingFormat, dstart)
+	if err != nil {
+		return "", errors.Wrap(err, "next date")
+	}
 
-	switch in.RepeatRule {
+	parts := strings.Fields(repeat)
+	if len(parts) == 0 {
+		return "", nil
+	}
+
+	switch parts[0] {
 	case "d":
+		days, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return "", errors.Wrap(err, "parsing d rule")
+		}
 		for {
-			date = date.AddDate(0, 0, in.Interval)
+			date = date.AddDate(0, 0, days)
 			if afterNow(date, now) {
 				break
 			}
 		}
-		return date, nil
 	case "y":
-		date = date.AddDate(1, 0, 0)
-		return date, nil
+		for {
+			date = date.AddDate(1, 0, 0)
+			if afterNow(date, now) {
+				break
+			}
+		}
 	default:
-		return time.Time{}, errors.New("incorrect rule")
+		return "", errors.New("incorrect repeat rule")
+
 	}
+	return date.Format(tests.DateParsingFormat), nil
 }
 
-func (l *ListUC) Add(request models.ListDB) (int, error) {
-	return l.ListRepo.AddTask(request)
+func (l *TaskUC) Add(request models.Task) (int, error) {
+	return l.TaskRepo.AddTask(request)
 }
 
-func (l *ListUC) GetLast(n int) ([]*models.List, error) {
-	return l.ListRepo.GetLastTasks(n)
+func (l *TaskUC) GetLast(n int) ([]*models.Task, error) {
+	return l.TaskRepo.GetLastTasks(n)
 }
 
-func (l *ListUC) GetByID(id string) (models.List, error) {
-	return l.ListRepo.GetTaskByID(id)
+func (l *TaskUC) GetByID(id string) (models.Task, error) {
+	return l.TaskRepo.GetTaskByID(id)
 }
 
-func (l *ListUC) Update(task models.ListDB) error {
-	return l.ListRepo.UpdateTask(task)
+func (l *TaskUC) Update(task models.Task) error {
+	return l.TaskRepo.UpdateTask(task)
 }
 
-func (l *ListUC) Done(task models.ListDB) error {
-	date, err := l.nextDate(task, time.Now())
+func (l *TaskUC) Done(task models.Task) error {
+	date, err := l.nextDate(time.Now(), task.Date, task.Repeat)
 	if err != nil {
 		return errors.Wrap(err, "next date")
 	}
 
 	task.Date = date
 
-	return l.ListRepo.UpdateTaskDate(task)
+	return l.TaskRepo.UpdateTaskDate(task)
 }
 
-func (l *ListUC) Delete(id string) error {
-	return l.ListRepo.DeleteTask(id)
+func (l *TaskUC) Delete(id string) error {
+	return l.TaskRepo.DeleteTask(id)
+}
+
+func (l *TaskUC) NextDate(ask models.Task, now time.Time) (string, error) {
+	return l.nextDate(now, ask.Date, ask.Repeat)
 }

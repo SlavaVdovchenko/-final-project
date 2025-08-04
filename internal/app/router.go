@@ -6,7 +6,7 @@ import (
 	"todo_list/internal/usecase"
 )
 
-func getRouter(uc *usecase.ListUC) http.Handler {
+func getRouter(uc *usecase.TaskUC) http.Handler {
 	mux := http.NewServeMux()
 
 	h := handler.New(uc)
@@ -23,6 +23,8 @@ func getRouter(uc *usecase.ListUC) http.Handler {
 			h.DeleteTaskHandler(w, r)
 		}
 	})
+
+	mux.HandleFunc("/api/nextdate", h.GetNextDatehandler)
 
 	mux.HandleFunc("/api/task/done", h.PutDoneTaskHandler)
 

@@ -27,6 +27,8 @@ func Run() error {
 	uc := usecase.New(repo)
 	handler := getRouter(uc)
 
+	slog.Info("app started", slog.String("port", strconv.Itoa(tests.Port)))
+
 	if err := http.ListenAndServe(":"+strconv.Itoa(tests.Port), handler); err != nil {
 		return errors.Wrap(err, "app.Run down")
 	}

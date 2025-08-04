@@ -9,19 +9,19 @@ import (
 	"github.com/pkg/errors"
 )
 
-type ListRepo struct {
+type TaskRepo struct {
 	conn *sql.DB
 }
 
-func New(dbConn *sql.DB) *ListRepo {
-	return &ListRepo{
+func New(dbConn *sql.DB) *TaskRepo {
+	return &TaskRepo{
 		conn: dbConn,
 	}
 }
 
-func (l *ListRepo) AddTask(request models.ListDB) (int, error) {
+func (l *TaskRepo) AddTask(request models.Task) (int, error) {
 	res, err := l.conn.Exec("INSERT INTO scheduler (date, title, comment, repeat) VALUES (?, ?, ?, ?)",
-		request.Date.Format("20060102"), request.Title, request.Comment, request.Repeat)
+		request.Date, request.Title, request.Comment, request.Repeat)
 	if err != nil {
 		return 0, errors.Wrap(err, "adding to db")
 	}
@@ -34,12 +34,12 @@ func (l *ListRepo) AddTask(request models.ListDB) (int, error) {
 	return int(ID), nil
 }
 
-func (l *ListRepo) GetLastTasks(limit int) ([]*models.List, error) {
-	result := make([]*models.List, 0, limit)
+func (l *TaskRepo) GetLastTasks(limit int) ([]*models.Task, error) {
+	result := make([]*models.Task, 0, limit)
 	selectString := fmt.Sprintf("SELECT id, date, title, comment, repeat FROM scheduler ORDER BY date ASC LIMIT %d", limit)
 	rows, err := l.conn.Query(selectString)
 	if err != nil {
-		return nil, errors.Wrap(err, "select last lists")
+		return nil, errors.Wrap(err, "select last tasks")
 	}
 
 	defer func() {
@@ -56,7 +56,7 @@ func (l *ListRepo) GetLastTasks(limit int) ([]*models.List, error) {
 			return nil, errors.Wrap(err, "rows scan")
 		}
 
-		result = append(result, &models.List{
+		result = append(result, &models.Task{
 			ID:      id,
 			Date:    date,
 			Title:   title,
@@ -72,8 +72,8 @@ func (l *ListRepo) GetLastTasks(limit int) ([]*models.List, error) {
 	return result, nil
 }
 
-func (l *ListRepo) GetTaskByID(id string) (models.List, error) {
-	var result models.List
+func (l *TaskRepo) GetTaskByID(id string) (models.Task, error) {
+	var result models.Task
 
 	row := l.conn.QueryRow("SELECT id, date, title, comment, repeat FROM scheduler WHERE id =?", id)
 
@@ -84,8 +84,8 @@ func (l *ListRepo) GetTaskByID(id string) (models.List, error) {
 	return result, nil
 }
 
-func (l *ListRepo) UpdateTask(task models.ListDB) error {
-	_, err := l.conn.Exec("UPDATE scheduler SET date = ?, title = ?, comment = ?, repeat = ? WHERE id = ?", task.Date.Format("20060102"),
+func (l *TaskRepo) UpdateTask(task models.Task) error {
+	_, err := l.conn.Exec("UPDATE scheduler SET date = ?, title = ?, comment = ?, repeat = ? WHERE id = ?", task.Date,
 		task.Title, task.Comment, task.Repeat, task.ID)
 	if err != nil {
 		return errors.Wrap(err, "update task")
@@ -93,15 +93,15 @@ func (l *ListRepo) UpdateTask(task models.ListDB) error {
 	return nil
 }
 
-func (l *ListRepo) UpdateTaskDate(task models.ListDB) error {
-	_, err := l.conn.Exec("UPDATE scheduler SET date = ? WHERE id = ?", task.Date.Format("20060102"), task.ID)
+func (l *TaskRepo) UpdateTaskDate(task models.Task) error {
+	_, err := l.conn.Exec("UPDATE scheduler SET date = ? WHERE id = ?", task.Date, task.ID)
 	if err != nil {
 		return errors.Wrap(err, "update task date")
 	}
 	return nil
 }
 
-func (l *ListRepo) DeleteTask(id string) error {
+func (l *TaskRepo) DeleteTask(id string) error {
 	_, err := l.conn.Exec("DELETE FROM scheduler WHERE id = ?", id)
 	if err != nil {
 		return errors.Wrap(err, "delete task")
